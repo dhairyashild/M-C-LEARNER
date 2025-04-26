@@ -1,0 +1,186 @@
+import pandas as pd
+import numpy as np
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+
+# ==================== १. डेटा लोड करणे ====================
+def load_data(file_path):
+    """डेटा सुरक्षित पद्धतीने लोड करा"""
+    # सर्व संभाव्य गहाळ मूल्य फॉरमॅट्स स्पष्टपणे निर्दिष्ट करा
+    df = pd.read_csv(
+        file_path,
+        encoding='utf-8',
+        na_values=['', 'NA', 'NaN', 'null', 'NULL', 'None', '?', '-', 'missing'],
+        keep_default_na=False
+    )
+    return df.copy(deep=True)  # मूळ डेटाची सुरक्षित कॉपी
+
+# ==================== २. प्रारंभिक डेटा तपासणी ====================
+def initial_analysis(df):
+    """डेटाची संपूर्ण प्रारंभिक तपासणी करा"""
+    print("=== प्रारंभिक डेटा तपासणी ===")
+    
+    # मूलभूत माहिती
+    print(f"\nआकार: {df.shape}")
+    print("\nस्तंभांची माहिती:")
+    print(df.dtypes)
+    
+    # गहाळ मूल्यांचा तपशीलवार अहवाल
+    missing_stats = pd.DataFrame({
+        'गहाळ मूल्ये': df.isna().sum(),
+        'टक्केवारी': (df.isna().mean()*100).round(2)
+    }).sort_values('टक्केवारी', ascending=False)
+    
+    print("\nगहाळ मूल्यांचा अहवाल:")
+    print(missing_stats[missing_stats['गहाळ मूल्ये'] > 0])
+    
+    # संख्यात्मक स्तंभांची सांख्यिकी
+    if df.select_dtypes(include=np.number).shape[1] > 0:
+        print("\nसंख्यात्मक स्तंभांची सांख्यिकी:")
+        print(df.describe(percentiles=[.01, .05, .25, .5, .75, .95, .99]))
+    
+    return df
+
+# ==================== ३. डेटा क्लीनिंग ====================
+def clean_data(df):
+    """डेटा साफ करण्याची संपूर्ण प्रक्रिया"""
+    print("\n=== डेटा क्लीनिंग प्रक्रिया ===")
+    
+    # 3.1 डुप्लिकेट पंक्ती काढणे
+    initial_rows = df.shape[0]
+    df = df.drop_duplicates().copy()
+    print(f"\nडुप्लिकेट पंक्ती काढल्या: {initial_rows - df.shape[0]}")
+    
+    # 3.2 स्तंभ वर्गीकरण
+    num_cols = df.select_dtypes(include=np.number).columns.tolist()
+    cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+    date_cols = df.select_dtypes(include=['datetime']).columns.tolist()
+    
+    print("\nस्तंभ वर्गीकरण:")
+    print(f"संख्यात्मक: {num_cols}")
+    print(f"श्रेणीबद्ध: {cat_cols}")
+    print(f"तारीख: {date_cols}")
+    
+    # 3.3 गहाळ मूल्ये हाताळणे
+    print("\nगहाळ मूल्ये हाताळणे:")
+    
+    # संख्यात्मक स्तंभ - मध्यकाने भरणे (आउटलायर्ससाठी रोबस्ट)
+    for col in num_cols:
+        if df[col].isna().sum() > 0:
+            median_val = df[col].median()
+            df[col].fillna(median_val, inplace=True)
+            print(f"{col}: {df[col].isna().sum()} गहाळ मूल्ये मध्यक ({median_val:.2f}) ने भरली")
+    
+    # श्रेणीबद्ध स्तंभ - मोडने भरणे
+    for col in cat_cols:
+        if df[col].isna().sum() > 0:
+            mode_val = df[col].mode()[0]
+            df[col].fillna(mode_val, inplace=True)
+            print(f"{col}: {df[col].isna().sum()} गहाळ मूल्ये मोड ('{mode_val}') ने भरली")
+    
+    # 3.4 डेटा प्रकार रूपांतरण
+    for col in date_cols:
+        df[col] = pd.to_datetime(df[col], errors='coerce')
+        print(f"{col}: तारीख स्वरूपात रूपांतरित")
+    
+    # 3.5 स्ट्रिंग क्लीनिंग
+    for col in cat_cols:
+        df[col] = df[col].astype(str).str.strip().str.replace(r'\s+', ' ', regex=True)
+    print("\nश्रेणीबद्ध डेटा साफ केला (स्पेस, केसिंग)")
+    
+    return df, num_cols, cat_cols
+
+# ==================== ४. आउटलायर्स हाताळणे ====================
+def handle_outliers(df, num_cols, threshold=1.5):
+    """IQR पद्धतीने आउटलायर्स हाताळा"""
+    print("\n=== आउटलायर्स हाताळणी ===")
+    
+    df_clean = df.copy()
+    outlier_report = []
+    
+    for col in num_cols:
+        Q1 = df_clean[col].quantile(0.25)
+        Q3 = df_clean[col].quantile(0.75)
+        IQR = Q3 - Q1
+        lower = Q1 - threshold * IQR
+        upper = Q3 + threshold * IQR
+        
+        outliers = df_clean[(df_clean[col] < lower) | (df_clean[col] > upper)]
+        if not outliers.empty:
+            # आउटलायर्सला मर्यादेपर्यंत कापा (winsorization)
+            df_clean[col] = np.where(df_clean[col] < lower, lower, 
+                                   np.where(df_clean[col] > upper, upper, df_clean[col]))
+            outlier_report.append({
+                'स्तंभ': col,
+                'आउटलायर्स': len(outliers),
+                'टक्केवारी': f"{(len(outliers)/len(df)*100:.2f}%",
+                'कमी मर्यादा': f"{lower:.2f}",
+                'उच्च मर्यादा': f"{upper:.2f}"
+            })
+    
+    if outlier_report:
+        print(pd.DataFrame(outlier_report))
+    else:
+        print("कोणतेही महत्त्वपूर्ण आउटलायर्स आढळले नाहीत")
+    
+    return df_clean
+
+# ==================== ५. फीचर इंजिनियरिंग ====================
+def feature_engineering(df, num_cols, cat_cols):
+    """डेटा प्रीप्रोसेसिंग पायपलाइन"""
+    print("\n=== फीचर इंजिनियरिंग ===")
+    
+    # संख्यात्मक पायपलाइन
+    numeric_transformer = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='median')),
+        ('scaler', StandardScaler())
+    ])
+    
+    # श्रेणीबद्ध पायपलाइन
+    categorical_transformer = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='most_frequent')),
+        ('encoder', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+    ])
+    
+    # स्तंभ ट्रान्सफॉर्मर
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('num', numeric_transformer, num_cols),
+            ('cat', categorical_transformer, cat_cols)
+        ],
+        remainder='passthrough'
+    )
+    
+    return preprocessor
+
+# ==================== ६. मुख्य प्रक्रिया ====================
+if __name__ == "__main__":
+    # 1. डेटा लोड करा
+    df_raw = load_data('your_data.csv')
+    
+    # 2. प्रारंभिक विश्लेषण
+    df_checked = initial_analysis(df_raw)
+    
+    # 3. डेटा साफ करा
+    df_cleaned, num_cols, cat_cols = clean_data(df_checked)
+    
+    # 4. आउटलायर्स हाताळा (फक्त संख्यात्मक स्तंभांसाठी)
+    if num_cols:
+        df_outliers_handled = handle_outliers(df_cleaned, num_cols)
+    else:
+        df_outliers_handled = df_cleaned
+    
+    # 5. प्रीप्रोसेसिंग पायपलाइन तयार करा
+    preprocessor = feature_engineering(df_outliers_handled, num_cols, cat_cols)
+    
+    # 6. अंतिम डेटा तपासणी
+    print("\n=== अंतिम डेटा स्थिती ===")
+    print(f"अंतिम आकार: {df_outliers_handled.shape}")
+    print(f"गहाळ मूल्ये: {df_outliers_handled.isna().sum().sum()}")
+    
+    # 7. पायपलाइन लागू करा (उदाहरणार्थ)
+    # X = df_outliers_handled.drop('target', axis=1)
+    # y = df_outliers_handled['target']
+    # X_processed = preprocessor.fit_transform(X)
