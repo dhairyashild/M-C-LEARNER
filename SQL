@@ -1,0 +1,5 @@
+Key SQL Knowledge for ML:
+
+Basic SELECT, FROM, WHERE, JOIN, GROUP BY, ORDER BY, LIMIT.
+Understanding of data types and basic SQL functions.
+This provides a concise overview of why SQL is needed for ML and the fundamental commands you'll likely use.
